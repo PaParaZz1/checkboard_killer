@@ -4,12 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 from data import get_color_patch
-
-
-def save_image(path, img):
-    print(img.shape)
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(path+'.png', img)
+from utils import save_image
 
 
 def conv_modules():
