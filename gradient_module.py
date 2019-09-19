@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from data import get_color_patch
 from utils import save_image
+#from blur_grad_conv2d import BlurGradConv2d
 import sys
 import os
 sys.path.append('../CARAFE_pytorch')
@@ -13,8 +14,14 @@ class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
         #self.conv1 = nn.Conv2d(3, 3, 3, 1, 1)
-        self.conv1 = nn.Conv2d(3, 3, 3, 2, 1, bias=False)
-        self.conv1.weight.data = torch.ones(3, 3, 3, 3)
+        self.gauss = torch.FloatTensor([1, 2, 1]).view(3, 1)
+        self.gauss = self.gauss.matmul(self.gauss.view(1, 3))
+        self.gauss.div_(self.gauss.sum())
+        self.gauss = self.gauss.view(1, 1, 3, 3).repeat(3, 1, 1, 1)
+        self.conv1 = nn.Conv2d(3, 3, 3, 2, 1)
+        #self.conv1 = nn.Conv2d(3, 3, 4, 2, [1, 2], bias=False)
+        #self.conv1.weight.data = torch.ones(3, 3, 4, 4)
+        #self.conv1.weight.data = torch.FloatTensor([1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4]).view(1, 1, 4, 4).repeat(3, 3, 1, 1)
         self.conv2 = nn.Conv2d(3, 3, 3, 1, 1)
         self.mp = nn.MaxPool2d(2, 2)
         self.ap = nn.AvgPool2d(2, 2)
@@ -30,18 +37,26 @@ class Net(nn.Module):
 
     def forward_viz_grad(self, x):
         self.grad = {}
+        self.handle = {}
 
         def save_grad(name):
             def hook(grad):
                 self.grad[name] = grad
             return hook
 
+        def blur_grad(name):
+            def hook(grad_in):
+                grad_in = F.conv2d(grad_in, self.gauss, stride=1, padding=1, groups=3)
+                self.grad[name] = grad_in
+                return grad_in
+            return hook
+
         x1 = self.conv1(x)
         #x1 = self.mp(x)
         x2 = F.interpolate(x1, scale_factor=2, mode='bilinear')
         x3 = self.conv2(x2)
-        x.register_hook(save_grad('x'))
-        x1.register_hook(save_grad('x1'))
+        self.handle['x'] = x.register_hook(blur_grad('x'))
+        self.handle['x1'] = x1.register_hook(save_grad('x1'))
         #x2.register_hook(save_grad('x2'))
         #x3.register_hook(save_grad('x3'))
         return x3
@@ -50,7 +65,7 @@ class Net(nn.Module):
 def grad_viz():
     ITER = 500
     LR = 1e-2
-    OUTPUT_DIR = 'conv_s2_no_bias_1init/'
+    OUTPUT_DIR = 'exp/'
     if not os.path.exists(OUTPUT_DIR):
         os.mkdir(OUTPUT_DIR)
     label = get_color_patch()
@@ -73,8 +88,14 @@ def grad_viz():
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        for k, v in net.handle.items():
+            v.remove()
         print('idx: {}\tloss: {}'.format(idx, loss.item()))
         if idx % 10 == 0:
+            H, W = net.grad['x1'].shape[2:]
+            x1_g = torch.zeros(1, 3, 2*H, 2*W)
+            x1_g[..., ::2, ::2] = net.grad['x1'][..., :, :]
+            net.grad['est'] = F.conv2d(x1_g, net.conv1.weight, stride=1, padding=1)
             for k, v in net.grad.items():
                 grad = v.data.squeeze(0).permute(1, 2, 0)
                 grad = grad.abs_()
