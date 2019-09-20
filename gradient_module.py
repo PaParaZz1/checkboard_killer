@@ -51,6 +51,14 @@ class Net(nn.Module):
                 return grad_in
             return hook
 
+        def down_up_grad(name):
+            def hook(grad_in):
+                grad_in = F.avg_pool2d(grad_in, kernel_size=2, stride=2)
+                grad_in = F.interpolate(grad_in, scale_factor=2, mode='nearest')
+                self.grad[name] = grad_in
+                return grad_in
+            return hook
+
         x1 = self.conv1(x)
         #x1 = self.mp(x)
         x2 = F.interpolate(x1, scale_factor=2, mode='bilinear')
@@ -65,7 +73,7 @@ class Net(nn.Module):
 def grad_viz():
     ITER = 500
     LR = 1e-2
-    OUTPUT_DIR = 'exp/'
+    OUTPUT_DIR = 'conv_s1_blur/'
     if not os.path.exists(OUTPUT_DIR):
         os.mkdir(OUTPUT_DIR)
     label = get_color_patch()
