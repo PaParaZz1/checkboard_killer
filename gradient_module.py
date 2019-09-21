@@ -24,15 +24,19 @@ class NoiseMaxPool(nn.Module):
 class _RectifiedMaxPool2d(Function):
 
     @staticmethod
-    def forward(ctx, x, *args, **kwargs):
-        y = F.max_pool2d(x, *args, **kwargs)
-        y_dup = F.interpolate(y.data, scale_factor=2, mode='nearest')
-        ctx.max_location = x.data.eq(y_dup)
+    def forward(ctx, x, kernel_size=2, stride=2, padding=0, dilation=1, return_indices=False, ceil_mode=False):
+        assert(kernel_size == stride)
+        assert(not return_indices)
+        y = F.max_pool2d(x, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation,
+                         return_indices=return_indices, ceil_mode=ceil_mode)
+        y_dup = F.interpolate(y, scale_factor=stride, mode='nearest')
+        ctx.max_location = x.eq(y_dup)
+        ctx.stride = stride
         return y
 
     @staticmethod
     def backward(ctx, grad_out):
-        grad_in = F.interpolate(grad_out, scale_factor=2, mode='nearest')
+        grad_in = F.interpolate(grad_out, scale_factor=ctx.stride, mode='nearest')
         ctx.max_location = torch.tensor(ctx.max_location.clone().detach(), device=grad_out.device, dtype=grad_out.dtype)
         return ctx.max_location * grad_in, None, None
 
