@@ -8,12 +8,50 @@ import sys
 import os
 sys.path.append('../CARAFE_pytorch')
 from CARAFE_downsample import  CarafeDownsample
+from torch.autograd import Function
+
+
+class NoiseMaxPool(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super(NoiseMaxPool, self).__init__()
+        self.mp = nn.MaxPool2d(*args, **kwargs)
+
+    def forward(self, x):
+        min_val = x.clone().abs().min() * 1e-3
+        return self.mp(x + min_val * torch.randn_like(x))
+
+
+class _RectifiedMaxPool2d(Function):
+
+    @staticmethod
+    def forward(ctx, x, *args, **kwargs):
+        y = F.max_pool2d(x, *args, **kwargs)
+        y_dup = F.interpolate(y.data, scale_factor=2, mode='nearest')
+        ctx.max_location = x.data.eq(y_dup)
+        return y
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        grad_in = F.interpolate(grad_out, scale_factor=2, mode='nearest')
+        ctx.max_location = torch.tensor(ctx.max_location.clone().detach(), device=grad_out.device, dtype=grad_out.dtype)
+        return ctx.max_location * grad_in, None, None
+
+
+class RectifiedMaxPool2d(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super(RectifiedMaxPool2d, self).__init__()
+        self.args = args
+        self.kwargs = kwargs
+
+    def forward(self, x):
+        return _RectifiedMaxPool2d.apply(x, *self.args, **self.kwargs)
 
 
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
         #self.conv1 = nn.Conv2d(3, 3, 3, 1, 1)
+        self.conv_mp = nn.Conv2d(3, 3, 3, 1, 1)
         self.gauss = torch.FloatTensor([1, 2, 1]).view(3, 1)
         self.gauss = self.gauss.matmul(self.gauss.view(1, 3))
         self.gauss.div_(self.gauss.sum())
@@ -23,13 +61,16 @@ class Net(nn.Module):
         #self.conv1.weight.data = torch.ones(3, 3, 4, 4)
         #self.conv1.weight.data = torch.FloatTensor([1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4]).view(1, 1, 4, 4).repeat(3, 3, 1, 1)
         self.conv2 = nn.Conv2d(3, 3, 3, 1, 1)
-        self.mp = nn.MaxPool2d(2, 2)
+        #self.mp = nn.MaxPool2d(2, 2)
+        #self.mp = NoiseMaxPool(2, 2)
+        self.mp = RectifiedMaxPool2d(2, 2)
         self.ap = nn.AvgPool2d(2, 2)
         self.carafe_down = CarafeDownsample(3, scale_factor=2, m_channels=3)
 
     def forward(self, x):
-        x = self.conv1(x)
-        #x = self.mp(x)
+        #x = self.conv_mp(x)
+        #x = self.conv1(x)
+        x = self.mp(x)
         #x = self.carafe_down(x)
         x = F.interpolate(x, scale_factor=2, mode='bilinear')
         x = self.conv2(x)
@@ -59,11 +100,12 @@ class Net(nn.Module):
                 return grad_in
             return hook
 
-        x1 = self.conv1(x)
-        #x1 = self.mp(x)
+        #x = self.conv_mp(x)
+        #x1 = self.conv1(x)
+        x1 = self.mp(x)
         x2 = F.interpolate(x1, scale_factor=2, mode='bilinear')
         x3 = self.conv2(x2)
-        self.handle['x'] = x.register_hook(blur_grad('x'))
+        self.handle['x'] = x.register_hook(save_grad('x'))
         self.handle['x1'] = x1.register_hook(save_grad('x1'))
         #x2.register_hook(save_grad('x2'))
         #x3.register_hook(save_grad('x3'))
@@ -73,7 +115,7 @@ class Net(nn.Module):
 def grad_viz():
     ITER = 500
     LR = 1e-2
-    OUTPUT_DIR = 'conv_s1_blur/'
+    OUTPUT_DIR = 'mp_random_noise_blur/'
     if not os.path.exists(OUTPUT_DIR):
         os.mkdir(OUTPUT_DIR)
     label = get_color_patch()
@@ -120,5 +162,15 @@ def grad_viz():
     save_image(OUTPUT_DIR + 'grad', input.data.squeeze(0).permute(1, 2, 0).mul_(255.).clamp(0, 255).numpy())
 
 
+def test_rectified_max_pool():
+    m = RectifiedMaxPool2d(2, 2)
+    input = torch.FloatTensor([1 for _ in range(16)]).view(1, 1, 4, 4).requires_grad_(True)
+    output = m(input)
+    loss = output.mean()
+    loss.backward()
+    print(input.grad)
+
+
 if __name__ == "__main__":
     grad_viz()
+    #test_rectified_max_pool()
