@@ -1,14 +1,17 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from data import get_color_patch
+from data import get_color_patch, get_color
 from utils import save_image
 #from blur_grad_conv2d import BlurGradConv2d
 import sys
 import os
+import cv2
 sys.path.append('../CARAFE_pytorch')
 from CARAFE_downsample import  CarafeDownsample
 from torch.autograd import Function
+from blur_grad_conv import BlurGradConv
+from resnet import resnet50
 
 
 class NoiseMaxPool(nn.Module):
@@ -60,7 +63,8 @@ class Net(nn.Module):
         self.gauss = self.gauss.matmul(self.gauss.view(1, 3))
         self.gauss.div_(self.gauss.sum())
         self.gauss = self.gauss.view(1, 1, 3, 3).repeat(3, 1, 1, 1)
-        self.conv1 = nn.Conv2d(3, 3, 3, 2, 1)
+        #self.conv1 = nn.Conv2d(3, 3, 7, 2, 3)
+        self.conv1 = BlurGradConv(2, nn.Conv2d(3, 3, 7, 2, 3))
         #self.conv1 = nn.Conv2d(3, 3, 4, 2, [1, 2], bias=False)
         #self.conv1.weight.data = torch.ones(3, 3, 4, 4)
         #self.conv1.weight.data = torch.FloatTensor([1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4]).view(1, 1, 4, 4).repeat(3, 3, 1, 1)
@@ -73,8 +77,8 @@ class Net(nn.Module):
 
     def forward(self, x):
         #x = self.conv_mp(x)
-        #x = self.conv1(x)
-        x = self.mp(x)
+        x = self.conv1(x)
+        #x = self.mp(x)
         #x = self.carafe_down(x)
         x = F.interpolate(x, scale_factor=2, mode='bilinear')
         x = self.conv2(x)
@@ -105,8 +109,8 @@ class Net(nn.Module):
             return hook
 
         #x = self.conv_mp(x)
-        #x1 = self.conv1(x)
-        x1 = self.mp(x)
+        x1 = self.conv1(x)
+        #x1 = self.mp(x)
         x2 = F.interpolate(x1, scale_factor=2, mode='bilinear')
         x3 = self.conv2(x2)
         self.handle['x'] = x.register_hook(save_grad('x'))
@@ -116,18 +120,65 @@ class Net(nn.Module):
         return x3
 
 
+class TinyResNet(nn.Module):
+    def __init__(self):
+        super(TinyResNet, self).__init__()
+        self.conv1 = BlurGradConv(3, nn.Conv2d(3, 3, 7, 2, 3, bias=False))
+        self.avgpool = nn.AvgPool2d(2, 2)
+        self.c11 = nn.Conv2d(3, 3, 1, 1, 0)
+        self.c12 = BlurGradConv(3, nn.Conv2d(3, 3, 3, 2, 1))
+        #self.c12 = nn.Conv2d(4, 4, 3, 2, 1)
+        self.c13 = nn.Conv2d(3, 3, 1, 1, 0)
+        #self.c1r = nn.Conv2d(8, 8, 1, 2, 0)
+        #self.c1r = BlurGradConv(3, nn.Conv2d(8, 8, 1, 2, 0))
+
+    def forward(self, x, viz=True):
+        self.grad = {}
+        self.handle = {}
+
+        def save_grad(name):
+            def hook(grad):
+                self.grad[name] = grad
+            return hook
+
+        x0 = self.conv1(x)
+        #x = self.avgpool(x)
+        r0 = x0
+        x1 = self.c11(x0)
+        x2 = self.c12(x1)
+        x3 = self.c13(x2)
+        r1 = self.avgpool(r0)
+        if viz:
+            #self.handle['r1'] = r1.register_hook(save_grad('r1'))
+            self.handle['x0'] = x0.register_hook(save_grad('x0'))
+            self.handle['x'] = x.register_hook(save_grad('x'))
+
+        #r1 = self.c1r(r1)
+        y = x3 + r1
+        #x = F.relu(x + r1)
+        return y
+
+
 def grad_viz():
     ITER = 500
     LR = 1e-2
-    OUTPUT_DIR = 'mp_random_noise_blur/'
+    OUTPUT_DIR = 'tiny_resnet_exp/'
     if not os.path.exists(OUTPUT_DIR):
         os.mkdir(OUTPUT_DIR)
-    label = get_color_patch()
-    label = label.permute(2, 0, 1).unsqueeze(0).div_(255.)
+    #label = get_color()
+    #label = label.permute(2, 0, 1).unsqueeze(0).div_(255.)
+    label = cv2.imread('HR.png')
+    label = label[:, :-2, :]
+    label = cv2.cvtColor(label, cv2.COLOR_RGB2BGR)
+    label = torch.FloatTensor(label).permute(2, 0, 1).unsqueeze(0).div_(255.)
     input = torch.ones(*label.shape)
     input.requires_grad_(True)
-    net = Net()
+    net = TinyResNet()
+    #net = resnet50()
+    #print(net)
+    #return
     net.eval()
+    #net.requires_grad_(False)
     if torch.cuda.is_available():
         input = input.cuda()
         label = label.cuda()
@@ -136,8 +187,9 @@ def grad_viz():
     criterion = nn.MSELoss()
 
     for idx in range(ITER):
-        input_feature = net.forward_viz_grad(input)
-        label_feature = net(label)
+        #input_feature = net.forward_viz_grad(input)
+        label_feature = net(label, viz=False)
+        input_feature = net(input)
         loss = criterion(input_feature, label_feature)
         optimizer.zero_grad()
         loss.backward()
@@ -145,11 +197,11 @@ def grad_viz():
         for k, v in net.handle.items():
             v.remove()
         print('idx: {}\tloss: {}'.format(idx, loss.item()))
-        if idx % 10 == 0:
-            H, W = net.grad['x1'].shape[2:]
-            x1_g = torch.zeros(1, 3, 2*H, 2*W)
-            x1_g[..., ::2, ::2] = net.grad['x1'][..., :, :]
-            net.grad['est'] = F.conv2d(x1_g, net.conv1.weight, stride=1, padding=1)
+        if idx % 20 == 0:
+            #H, W = net.grad['x1'].shape[2:]
+            #x1_g = torch.zeros(1, 3, 2*H, 2*W)
+            #x1_g[..., ::2, ::2] = net.grad['x1'][..., :, :]
+            #net.grad['est'] = F.conv2d(x1_g, net.conv1.weight, stride=1, padding=1)
             for k, v in net.grad.items():
                 grad = v.data.squeeze(0).permute(1, 2, 0)
                 grad = grad.abs_()

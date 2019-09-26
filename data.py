@@ -26,6 +26,15 @@ def get_color_patch(patch_size=64):
     return result
 
 
+def get_color(patch_size=112):
+    color = (
+        (255, 140, 0)
+    )
+    patch = torch.ones(patch_size, patch_size, 3)
+    patch *= torch.FloatTensor((255, 140, 0)).view(1, 1, 3)
+    return patch
+
+
 def test_get_color_patch():
     patch = get_color_patch().numpy()
     patch = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
