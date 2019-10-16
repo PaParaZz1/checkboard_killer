@@ -8,9 +8,8 @@ import sys
 import os
 import cv2
 sys.path.append('../CARAFE_pytorch')
-from CARAFE_downsample import  CarafeDownsample
+#from CARAFE_downsample import  CarafeDownsample
 from torch.autograd import Function
-from blur_grad_conv import BlurGradConv
 from resnet import resnet50
 
 
@@ -73,7 +72,7 @@ class Net(nn.Module):
         #self.mp = NoiseMaxPool(2, 2)
         self.mp = RectifiedMaxPool2d(2, 2)
         self.ap = nn.AvgPool2d(2, 2)
-        self.carafe_down = CarafeDownsample(3, scale_factor=2, m_channels=3)
+        #self.carafe_down = CarafeDownsample(3, scale_factor=2, m_channels=3)
 
     def forward(self, x):
         #x = self.conv_mp(x)
@@ -95,6 +94,7 @@ class Net(nn.Module):
 
         def blur_grad(name):
             def hook(grad_in):
+                self.gauss = self.gauss.to(grad_in.device)
                 grad_in = F.conv2d(grad_in, self.gauss, stride=1, padding=1, groups=3)
                 self.grad[name] = grad_in
                 return grad_in
@@ -113,7 +113,7 @@ class Net(nn.Module):
         #x1 = self.mp(x)
         x2 = F.interpolate(x1, scale_factor=2, mode='bilinear')
         x3 = self.conv2(x2)
-        self.handle['x'] = x.register_hook(save_grad('x'))
+        self.handle['x'] = x.register_hook(blur_grad('x'))
         self.handle['x1'] = x1.register_hook(save_grad('x1'))
         #x2.register_hook(save_grad('x2'))
         #x3.register_hook(save_grad('x3'))
@@ -160,29 +160,26 @@ class TinyResNet(nn.Module):
 
 
 def grad_viz():
-    ITER = 500
-    LR = 1e-2
-    OUTPUT_DIR = 'tiny_resnet_exp/'
+    ITER = 5000
+    LR = 4e-3
+    OUTPUT_DIR = '0900_exp_5000/'
+    PATH = '0900_x4_HR.png'
     if not os.path.exists(OUTPUT_DIR):
         os.mkdir(OUTPUT_DIR)
-    #label = get_color()
-    #label = label.permute(2, 0, 1).unsqueeze(0).div_(255.)
-    label = cv2.imread('HR.png')
-    label = label[:, :-2, :]
-    label = cv2.cvtColor(label, cv2.COLOR_RGB2BGR)
-    label = torch.FloatTensor(label).permute(2, 0, 1).unsqueeze(0).div_(255.)
-    input = torch.ones(*label.shape)
+    #label = get_color_patch()
+    #label = label.permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
+    label = cv2.imread(PATH)
+    label = cv2.resize(label, (0,0), fx=0.25, fy=0.25)
+    label = cv2.cvtColor(label, cv2.COLOR_BGR2RGB)
+    label = torch.FloatTensor(label).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
+
+    input = torch.ones_like(label)
     input.requires_grad_(True)
-    net = TinyResNet()
-    #net = resnet50()
-    #print(net)
-    #return
+    #net = Net()
+    net = resnet50()
+    net.load_state_dict(torch.load('/mnt/lustre/niuyazhe/code/github/RCAN/RCAN_TrainCode/code/resnet50-19c8e357_grad_op.pth'), strict=False)
     net.eval()
-    #net.requires_grad_(False)
-    if torch.cuda.is_available():
-        input = input.cuda()
-        label = label.cuda()
-        net.cuda()
+    net.cuda()
     optimizer = torch.optim.Adam([input], lr=LR)
     criterion = nn.MSELoss()
 
@@ -194,10 +191,10 @@ def grad_viz():
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        for k, v in net.handle.items():
-            v.remove()
+        #for k, v in net.handle.items():
+        #    v.remove()
         print('idx: {}\tloss: {}'.format(idx, loss.item()))
-        if idx % 20 == 0:
+        if idx % 100 == 0:
             #H, W = net.grad['x1'].shape[2:]
             #x1_g = torch.zeros(1, 3, 2*H, 2*W)
             #x1_g[..., ::2, ::2] = net.grad['x1'][..., :, :]
@@ -210,8 +207,8 @@ def grad_viz():
             grad = input.grad.data.squeeze(0).permute(1, 2, 0)
             grad = grad.abs_()
             grad = (grad - grad.min()) / (grad.max() - grad.min() + 1e-12) * 255.
-            save_image(OUTPUT_DIR + 'input_grad_{}'.format(idx), grad.numpy())
-            save_image(OUTPUT_DIR + 'input_{}'.format(idx), input.clone().data.squeeze(0).permute(1, 2, 0).mul_(255.).clamp(0, 255).numpy())
+            save_image(OUTPUT_DIR + 'input_grad_{}'.format(idx), grad.cpu().numpy())
+            save_image(OUTPUT_DIR + 'input_{}'.format(idx), input.clone().data.squeeze(0).permute(1, 2, 0).mul_(255.).clamp(0, 255).cpu().numpy())
 
     if torch.cuda.is_available():
         input = input.cpu()

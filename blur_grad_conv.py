@@ -19,6 +19,25 @@ class BlurGrad(Function):
         return F.conv2d(grad_in, ctx.gauss_kernel, stride=1, padding=0, groups=ctx.groups), None, None, None
 
 
+class BlurGradResidual(Function):
+
+    @staticmethod
+    def forward(ctx, x, gauss_kernel, padding, groups):
+        ctx.gauss_kernel = gauss_kernel
+        ctx.padding = padding
+        ctx.groups = groups
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        alpha = 0
+        #grad_in = F.pad(grad_out, ctx.padding, mode='constant')
+        #grad_in = alpha * F.conv2d(grad_in, ctx.gauss_kernel, stride=1, padding=0, groups=ctx.groups) + (1-alpha) * grad_out
+        grad_in = grad_out
+        return grad_in, None, None, None
+
+
+
 class BlurGradConv(nn.Module):
     def __init__(self, gauss_kernel_size, conv):
         super(BlurGradConv, self).__init__()
@@ -48,7 +67,7 @@ class BlurGradConv(nn.Module):
         self.weight = self.conv.weight
 
     def forward(self, x):
-        x = BlurGrad.apply(x, self.gauss, self.pad, self.blur_groups)
+        #x = BlurGradResidual.apply(x, self.gauss, self.pad, self.blur_groups)
         x = self.conv(x)
         return x
 
