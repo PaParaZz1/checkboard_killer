@@ -135,6 +135,37 @@ class ShiftConv(nn.Module):
             return F.conv2d(x, self.weight, self.bias, self.stride, self.padding)
 
 
+class MaskNorm(Function):
+
+    @staticmethod
+    def forward(ctx, x):
+        ctx.mask = torch.FloatTensor([[1, 2], [2, 4]])
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        B, C, H, W = grad_out
+        mask = ctx.mask.to(grad_out.device)
+        grad_in = grad_out.view(B, C, H//2, 2, W//2,
+                                2).permute(0, 1, 2, 4, 3, 5)
+        grad_in /= mask
+        grad_in = grad_in.permute(
+            0, 1, 2, 4, 3, 5).contiguous().view(B, C, H, W)
+        return grad_in
+
+
+class MaskNormConv(nn.Module):
+    def __init__(self, conv):
+        super(MaskNormConv, self).__init__()
+        assert(conv.kernel_size == (3, 3) and conv.stride == (2, 2))
+        self.conv = conv
+
+    def forward(self, x):
+        x = MaskNorm.apply(x)
+        x = self.conv(x)
+        return x
+
+
 def test_blur_grad_conv():
     conv = nn.Conv2d(3, 6, 3, 1, 1)
     model = BlurGradConv(gauss_kernel_size=2, conv=conv).cuda()
@@ -180,7 +211,19 @@ def test_shift_conv():
     print(output.shape)
 
 
+def test_mask_norm_conv():
+    conv = nn.Conv2d(3, 6, 3, 2, 1)
+    model = MaskNormConv(conv)
+    inputs = torch.randn(2, 3, 8, 8)
+    output = model(inputs)
+    print(output.shape)
+    loss = output.sum()
+    loss.backward()
+    print('end')
+
+
 if __name__ == "__main__":
     # test_blur_grad_conv()
     # test_interp_grad_conv()
-    test_shift_conv()
+    # test_shift_conv()
+    test_mask_norm_conv()
