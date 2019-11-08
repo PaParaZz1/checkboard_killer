@@ -144,7 +144,7 @@ class MaskNorm(Function):
 
     @staticmethod
     def backward(ctx, grad_out):
-        B, C, H, W = grad_out
+        B, C, H, W = grad_out.shape
         mask = ctx.mask.to(grad_out.device)
         grad_in = grad_out.view(B, C, H//2, 2, W//2,
                                 2).permute(0, 1, 2, 4, 3, 5)

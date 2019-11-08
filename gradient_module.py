@@ -3,14 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from data import get_color_patch, get_color
 from utils import save_image
-#from blur_grad_conv2d import BlurGradConv2d
-import sys
 import os
 import cv2
-sys.path.append('../CARAFE_pytorch')
-#from CARAFE_downsample import  CarafeDownsample
 from torch.autograd import Function
 from resnet import resnet50
+from sp_op_conv import *
 
 
 class NoiseMaxPool(nn.Module):
@@ -54,31 +51,22 @@ class RectifiedMaxPool2d(nn.Module):
 
 
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, mode='normal'):
         super(Net, self).__init__()
-        #self.conv1 = nn.Conv2d(3, 3, 3, 1, 1)
-        self.conv_mp = nn.Conv2d(3, 3, 3, 1, 1)
-        self.gauss = torch.FloatTensor([1, 2, 1]).view(3, 1)
-        self.gauss = self.gauss.matmul(self.gauss.view(1, 3))
-        self.gauss.div_(self.gauss.sum())
-        self.gauss = self.gauss.view(1, 1, 3, 3).repeat(3, 1, 1, 1)
-        #self.conv1 = nn.Conv2d(3, 3, 7, 2, 3)
-        self.conv1 = BlurGradConv(2, nn.Conv2d(3, 3, 7, 2, 3))
-        #self.conv1 = nn.Conv2d(3, 3, 4, 2, [1, 2], bias=False)
-        #self.conv1.weight.data = torch.ones(3, 3, 4, 4)
-        #self.conv1.weight.data = torch.FloatTensor([1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4]).view(1, 1, 4, 4).repeat(3, 3, 1, 1)
+        if mode == 'normal':
+            self.conv1 = nn.Conv2d(3, 3, 3, 2, 1)
+        elif mode == 'blur':
+            self.conv1 = BlurGradConv(5, nn.Conv2d(3, 3, 3, 2, 1))
+        elif mode == 'mask':
+            self.conv1 = MaskNormConv(nn.Conv2d(3, 3, 3, 2, 1))
+        elif mode == 'shift_expand':
+            self.conv1 = ShiftConv(nn.Conv2d(3, 3, 3, 2, 1), 'expand')
+        elif mode == 'shift_divide':
+            self.conv1 = ShiftConv(nn.Conv2d(3, 3, 3, 2, 1), 'divide')
         self.conv2 = nn.Conv2d(3, 3, 3, 1, 1)
-        #self.mp = nn.MaxPool2d(2, 2)
-        #self.mp = NoiseMaxPool(2, 2)
-        self.mp = RectifiedMaxPool2d(2, 2)
-        self.ap = nn.AvgPool2d(2, 2)
-        #self.carafe_down = CarafeDownsample(3, scale_factor=2, m_channels=3)
 
     def forward(self, x):
-        #x = self.conv_mp(x)
         x = self.conv1(x)
-        #x = self.mp(x)
-        #x = self.carafe_down(x)
         x = F.interpolate(x, scale_factor=2, mode='bilinear')
         x = self.conv2(x)
         return x
@@ -160,24 +148,27 @@ class TinyResNet(nn.Module):
 
 
 def grad_viz():
-    ITER = 5000
-    LR = 4e-3
-    OUTPUT_DIR = '0900_exp_5000/'
+    ITER = 500
+    LR = 3e-4
+    OUTPUT_DIR = '0900_exp_shift_divide/'
     PATH = '0900_x4_HR.png'
+    viz_internal_grad = False
     if not os.path.exists(OUTPUT_DIR):
         os.mkdir(OUTPUT_DIR)
-    #label = get_color_patch()
-    #label = label.permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     label = cv2.imread(PATH)
     label = cv2.resize(label, (0,0), fx=0.25, fy=0.25)
     label = cv2.cvtColor(label, cv2.COLOR_BGR2RGB)
-    label = torch.FloatTensor(label).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
 
-    input = torch.ones_like(label)
+    #input = torch.ones_like(label)
+    input = cv2.GaussianBlur(label, (7, 7), 0.5)
+    save_image(OUTPUT_DIR + 'input.png', input)
+    save_image(OUTPUT_DIR + 'label.png', label)
+    label = torch.FloatTensor(label).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
+    input = torch.FloatTensor(input).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     input.requires_grad_(True)
-    #net = Net()
-    net = resnet50()
-    net.load_state_dict(torch.load('/mnt/lustre/niuyazhe/code/github/RCAN/RCAN_TrainCode/code/resnet50-19c8e357_grad_op.pth'), strict=False)
+    net = Net(mode='shift_divide')
+    #net = resnet50()
+    #net.load_state_dict(torch.load('/mnt/lustre/niuyazhe/code/github/RCAN/RCAN_TrainCode/code/resnet50-19c8e357_grad_op.pth'), strict=False)
     net.eval()
     net.cuda()
     optimizer = torch.optim.Adam([input], lr=LR)
@@ -185,34 +176,29 @@ def grad_viz():
 
     for idx in range(ITER):
         #input_feature = net.forward_viz_grad(input)
-        label_feature = net(label, viz=False)
+        label_feature = net(label)
         input_feature = net(input)
         loss = criterion(input_feature, label_feature)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        #for k, v in net.handle.items():
-        #    v.remove()
         print('idx: {}\tloss: {}'.format(idx, loss.item()))
-        if idx % 100 == 0:
-            #H, W = net.grad['x1'].shape[2:]
-            #x1_g = torch.zeros(1, 3, 2*H, 2*W)
-            #x1_g[..., ::2, ::2] = net.grad['x1'][..., :, :]
-            #net.grad['est'] = F.conv2d(x1_g, net.conv1.weight, stride=1, padding=1)
-            for k, v in net.grad.items():
-                grad = v.data.squeeze(0).permute(1, 2, 0)
-                grad = grad.abs_()
-                grad = (grad - grad.min()) / (grad.max() - grad.min() + 1e-12) * 255.
-                save_image(OUTPUT_DIR + 'grad_{}_{}'.format(k, idx), grad.numpy())
+        if idx % 10 == 0:
+            if viz_internal_grad:
+                #H, W = net.grad['x1'].shape[2:]
+                #x1_g = torch.zeros(1, 3, 2*H, 2*W)
+                #x1_g[..., ::2, ::2] = net.grad['x1'][..., :, :]
+                #net.grad['est'] = F.conv2d(x1_g, net.conv1.weight, stride=1, padding=1)
+                for k, v in net.grad.items():
+                    grad = v.data.squeeze(0).permute(1, 2, 0)
+                    grad = grad.abs_()
+                    grad = (grad - grad.min()) / (grad.max() - grad.min() + 1e-12) * 255.
+                    save_image(OUTPUT_DIR + 'grad_{}_{}'.format(k, idx), grad.numpy())
             grad = input.grad.data.squeeze(0).permute(1, 2, 0)
             grad = grad.abs_()
             grad = (grad - grad.min()) / (grad.max() - grad.min() + 1e-12) * 255.
             save_image(OUTPUT_DIR + 'input_grad_{}'.format(idx), grad.cpu().numpy())
             save_image(OUTPUT_DIR + 'input_{}'.format(idx), input.clone().data.squeeze(0).permute(1, 2, 0).mul_(255.).clamp(0, 255).cpu().numpy())
-
-    if torch.cuda.is_available():
-        input = input.cpu()
-    save_image(OUTPUT_DIR + 'grad', input.data.squeeze(0).permute(1, 2, 0).mul_(255.).clamp(0, 255).numpy())
 
 
 def test_rectified_max_pool():
