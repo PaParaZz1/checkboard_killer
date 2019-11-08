@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from data import get_color_patch, get_color
 from utils import save_image
 import os
 import cv2
 import numpy as np
 from torch.autograd import Function
+from functools import partial
 from resnet import resnet50
 from sp_op_conv import *
 
@@ -110,16 +110,20 @@ class Net(nn.Module):
 
 
 class TinyResNet(nn.Module):
-    def __init__(self):
+    def __init__(self, mode):
         super(TinyResNet, self).__init__()
-        self.conv1 = BlurGradConv(3, nn.Conv2d(3, 3, 7, 2, 3, bias=False))
+        if mode == 'normal':
+            conv_wrapper = partial(lambda conv:conv)
+        elif mode == 'blur':
+            conv_wrapper = partial(BlurGradConv, gauss_kernel_size=3)
+        else:
+            raise ValueError
+        self.conv1 = conv_wrapper(conv=nn.Conv2d(3, 3, 3, 2, 1, bias=False))
         self.avgpool = nn.AvgPool2d(2, 2)
         self.c11 = nn.Conv2d(3, 3, 1, 1, 0)
-        self.c12 = BlurGradConv(3, nn.Conv2d(3, 3, 3, 2, 1))
-        #self.c12 = nn.Conv2d(4, 4, 3, 2, 1)
+        self.c12 = conv_wrapper(conv=nn.Conv2d(3, 3, 3, 2, 1))
         self.c13 = nn.Conv2d(3, 3, 1, 1, 0)
-        #self.c1r = nn.Conv2d(8, 8, 1, 2, 0)
-        #self.c1r = BlurGradConv(3, nn.Conv2d(8, 8, 1, 2, 0))
+        self.c1r = conv_wrapper(conv=nn.Conv2d(3, 3, 3, 2, 1))
 
     def forward(self, x, viz=True):
         self.grad = {}
@@ -130,28 +134,26 @@ class TinyResNet(nn.Module):
                 self.grad[name] = grad
             return hook
 
-        x0 = self.conv1(x)
-        #x = self.avgpool(x)
+        x = self.conv1(x)
+        x0 = self.avgpool(x)
         r0 = x0
         x1 = self.c11(x0)
         x2 = self.c12(x1)
         x3 = self.c13(x2)
-        r1 = self.avgpool(r0)
-        if viz:
-            #self.handle['r1'] = r1.register_hook(save_grad('r1'))
-            self.handle['x0'] = x0.register_hook(save_grad('x0'))
-            self.handle['x'] = x.register_hook(save_grad('x'))
+        r1 = self.c1r(r0)
+        #if viz:
+        #    #self.handle['r1'] = r1.register_hook(save_grad('r1'))
+        #    self.handle['x0'] = x0.register_hook(save_grad('x0'))
+        #    self.handle['x'] = x.register_hook(save_grad('x'))
 
-        #r1 = self.c1r(r1)
         y = x3 + r1
-        #x = F.relu(x + r1)
         return y
 
 
 def grad_viz():
     ITER = 500
     LR = 3e-4
-    OUTPUT_DIR = '0900_exp_color/'
+    OUTPUT_DIR = '0900_exp_res_base/'
     PATH = '0900_x4_HR.png'
     viz_internal_grad = False
     if not os.path.exists(OUTPUT_DIR):
@@ -159,6 +161,8 @@ def grad_viz():
     label = cv2.imread(PATH)
     label = cv2.resize(label, (0, 0), fx=0.25, fy=0.25)
     label = cv2.cvtColor(label, cv2.COLOR_BGR2RGB)
+    H, W = label.shape[:2]
+    label = label[:H//16*16, :W//16*16]
 
 
     #input = torch.ones_like(label)
@@ -171,16 +175,14 @@ def grad_viz():
     label = torch.FloatTensor(label).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     input = torch.FloatTensor(input).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     input.requires_grad_(True)
-    net = Net(mode='normal')
-    #net = resnet50()
-    #net.load_state_dict(torch.load('/mnt/lustre/niuyazhe/code/github/RCAN/RCAN_TrainCode/code/resnet50-19c8e357_grad_op.pth'), strict=False)
+    #net = Net(mode='normal')
+    net = TinyResNet(mode='normal')
     net.eval()
     net.cuda()
     optimizer = torch.optim.Adam([input], lr=LR)
     criterion = nn.MSELoss()
 
     for idx in range(ITER):
-        #input_feature = net.forward_viz_grad(input)
         label_feature = net(label)
         input_feature = net(input)
         loss = criterion(input_feature, label_feature)
