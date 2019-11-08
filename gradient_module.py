@@ -5,6 +5,7 @@ from data import get_color_patch, get_color
 from utils import save_image
 import os
 import cv2
+import numpy as np
 from torch.autograd import Function
 from resnet import resnet50
 from sp_op_conv import *
@@ -150,23 +151,27 @@ class TinyResNet(nn.Module):
 def grad_viz():
     ITER = 500
     LR = 3e-4
-    OUTPUT_DIR = '0900_exp_shift_divide/'
+    OUTPUT_DIR = '0900_exp_color/'
     PATH = '0900_x4_HR.png'
     viz_internal_grad = False
     if not os.path.exists(OUTPUT_DIR):
         os.mkdir(OUTPUT_DIR)
     label = cv2.imread(PATH)
-    label = cv2.resize(label, (0,0), fx=0.25, fy=0.25)
+    label = cv2.resize(label, (0, 0), fx=0.25, fy=0.25)
     label = cv2.cvtColor(label, cv2.COLOR_BGR2RGB)
 
+
     #input = torch.ones_like(label)
-    input = cv2.GaussianBlur(label, (7, 7), 0.5)
+    input = np.copy(label)
+    for i in range(3):
+        input[..., i] = cv2.equalizeHist(input[..., i])
+    input = cv2.GaussianBlur(input, (7, 7), 0.5)
     save_image(OUTPUT_DIR + 'input.png', input)
     save_image(OUTPUT_DIR + 'label.png', label)
     label = torch.FloatTensor(label).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     input = torch.FloatTensor(input).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     input.requires_grad_(True)
-    net = Net(mode='shift_divide')
+    net = Net(mode='normal')
     #net = resnet50()
     #net.load_state_dict(torch.load('/mnt/lustre/niuyazhe/code/github/RCAN/RCAN_TrainCode/code/resnet50-19c8e357_grad_op.pth'), strict=False)
     net.eval()
