@@ -122,6 +122,8 @@ class TinyResNet(nn.Module):
             conv_wrapper = partial(ShiftConv, mode='expand')
         elif mode == 'shift_divide':
             conv_wrapper = partial(ShiftConv, mode='divide')
+        elif mode == 'blur_residual':
+            conv_wrapper = partial(BlurGradConv, gauss_kernel_size=3, use_residual=True, alpha=0.8)
         else:
             raise ValueError
         self.conv1 = conv_wrapper(conv=nn.Conv2d(3, 3, 3, 2, 1, bias=False))
@@ -159,7 +161,7 @@ class TinyResNet(nn.Module):
 def grad_viz():
     ITER = 500
     LR = 3e-4
-    OUTPUT_DIR = '0900_exp_res_shift_expand/'
+    OUTPUT_DIR = '0900_exp_res_blur_residual/'
     PATH = '0900_x4_HR.png'
     viz_internal_grad = False
     if not os.path.exists(OUTPUT_DIR):
@@ -182,7 +184,7 @@ def grad_viz():
     input = torch.FloatTensor(input).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     input.requires_grad_(True)
     #net = Net(mode='normal')
-    net = TinyResNet(mode='shift_expand')
+    net = TinyResNet(mode='blur_residual')
     net.eval()
     net.cuda()
     optimizer = torch.optim.Adam([input], lr=LR)

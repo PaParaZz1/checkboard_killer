@@ -19,8 +19,38 @@ class BlurGrad(Function):
         return F.conv2d(grad_in, ctx.gauss_kernel, stride=1, padding=0, groups=ctx.groups), None, None, None
 
 
+class BlurGradResidual(Function):
+
+    @staticmethod
+    def forward(ctx, x, gauss_kernel, padding, groups, alpha):
+        ctx.gauss_kernel = gauss_kernel
+        ctx.padding = padding
+        ctx.groups = groups
+        ctx.alpha = alpha
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        def viz(t):
+            return (t - t.min()) / (t.max() - t.min() + 1e-12) * 255
+        alpha = ctx.alpha
+        #cv2.imwrite('grad_out.png', viz(grad_out.data[0][0].abs().cpu().numpy()))
+        grad_pad = F.pad(grad_out, [2, 2, 2, 2], mode='reflect')
+        alpha_r = (grad_out - grad_pad[..., 4:, 2:-2]).abs()
+        alpha_d = (grad_out - grad_pad[..., 2:-2, 4:]).abs()
+        threshold = min(alpha_d.mean() + 2*alpha_d.std(), alpha_r.mean() + 2*alpha_r.std())
+        alpha_d = torch.where(alpha_d > threshold, torch.ones_like(grad_out), torch.zeros_like(grad_out))
+        alpha_r = torch.where(alpha_r > threshold, torch.ones_like(grad_out), torch.zeros_like(grad_out))
+        alpha = alpha_d * alpha_r
+        alpha1 = 1 - alpha
+        #cv2.imwrite('alpha.png', alpha.data[0][0].cpu().numpy()*255)
+        grad_in = F.pad(grad_out, ctx.padding, mode='constant')
+        grad_in = alpha1 * F.conv2d(grad_in, ctx.gauss_kernel, stride=1, padding=0, groups=ctx.groups) + alpha * grad_out
+        return grad_in, None, None, None, None
+
+
 class BlurGradConv(nn.Module):
-    def __init__(self, gauss_kernel_size, conv):
+    def __init__(self, gauss_kernel_size, conv, use_residual=False, alpha=0.5):
         super(BlurGradConv, self).__init__()
         assert(gauss_kernel_size in [2, 3, 5, 7])
         K = gauss_kernel_size
@@ -47,9 +77,14 @@ class BlurGradConv(nn.Module):
         self.conv = conv
         self.blur_groups = conv.in_channels
         self.weight = self.conv.weight
+        self.use_residual = use_residual
+        self.alpha = alpha
 
     def forward(self, x):
-        x = BlurGrad.apply(x, self.gauss, self.pad, self.blur_groups)
+        if self.use_residual:
+            x = BlurGradResidual.apply(x, self.gauss, self.pad, self.blur_groups, self.alpha)
+        else:
+            x = BlurGrad.apply(x, self.gauss, self.pad, self.blur_groups)
         x = self.conv(x)
         return x
 
