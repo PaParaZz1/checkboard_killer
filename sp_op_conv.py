@@ -170,6 +170,25 @@ class ShiftConv(nn.Module):
             return F.conv2d(x, self.weight, self.bias, self.stride, self.padding)
 
 
+class ShiftCountConv(nn.Module):
+    def __init__(self, conv):
+        super(ShiftCountConv, self).__init__()
+        self.weight = conv.weight
+        self.bias = conv.bias
+        self.stride = conv.stride
+        self.padding = conv.padding
+        self.count = 0
+        self.offset = [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+    def forward(self, x):
+        H, W = x.shape[2:]
+        x = F.pad(x, [0, 1, 0, 1], mode='reflect')
+        h, w = self.offset[self.count]
+        x = x[..., h:h+H, w:w+W]
+        self.count = (self.count + 1) % 4
+        return F.conv2d(x, self.weight, self.bias, self.stride, self.padding)
+
+
 class MaskNorm(Function):
 
     @staticmethod
