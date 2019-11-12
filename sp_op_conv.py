@@ -76,7 +76,6 @@ class BlurGradConv(nn.Module):
         self.gauss = nn.Parameter(self.gauss).requires_grad_(False)
         self.conv = conv
         self.blur_groups = conv.in_channels
-        self.weight = self.conv.weight
         self.use_residual = use_residual
         self.alpha = alpha
 
