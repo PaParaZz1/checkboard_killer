@@ -64,6 +64,10 @@ class Net(nn.Module):
             self.conv1 = ShiftConv(nn.Conv2d(3, 3, 3, 2, 1), 'expand')
         elif mode == 'shift_divide':
             self.conv1 = ShiftConv(nn.Conv2d(3, 3, 3, 2, 1), 'divide')
+        elif mode == 'blur_residual':
+            self.conv1 = BlurGradConv(3, nn.Conv2d(3, 3, 3, 2, 1), use_residual=True, alpha=0.8)
+        elif mode == 'shift_count':
+            self.conv1 = ShiftCountConv(nn.Conv2d(3, 3, 3, 2, 1))
         self.conv2 = nn.Conv2d(3, 3, 3, 1, 1)
 
     def forward(self, x):
@@ -159,9 +163,9 @@ class TinyResNet(nn.Module):
 
 
 def grad_viz():
-    ITER = 500
+    ITER = 500 + 2
     LR = 3e-4
-    OUTPUT_DIR = '0900_exp_res_blur_residual/'
+    OUTPUT_DIR = '0900_exp_net_shift_expand_2/'
     PATH = '0900_x4_HR.png'
     viz_internal_grad = False
     if not os.path.exists(OUTPUT_DIR):
@@ -183,22 +187,32 @@ def grad_viz():
     label = torch.FloatTensor(label).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     input = torch.FloatTensor(input).permute(2, 0, 1).unsqueeze(0).div_(255.).cuda()
     input.requires_grad_(True)
-    #net = Net(mode='normal')
-    net = TinyResNet(mode='blur_residual')
+    net = Net(mode='shift_expand')
+    #net = Net(mode='blur_residual')
+    #net = TinyResNet(mode='blur_residual')
     net.eval()
     net.cuda()
     optimizer = torch.optim.Adam([input], lr=LR)
     criterion = nn.MSELoss()
 
+    count = 0
+    accumulate = False
     for idx in range(ITER):
         label_feature = net(label)
         input_feature = net(input)
         loss = criterion(input_feature, label_feature)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if accumulate:
+            loss.backward()
+            count = (count + 1) % 4
+            if count == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+        else:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
         print('idx: {}\tloss: {}'.format(idx, loss.item()))
-        if idx % 10 == 0:
+        if idx % 50 == 0:
             if viz_internal_grad:
                 #H, W = net.grad['x1'].shape[2:]
                 #x1_g = torch.zeros(1, 3, 2*H, 2*W)
