@@ -41,7 +41,7 @@ class BlurGradResidual(Function):
         threshold = min(alpha_d.mean() + 2*alpha_d.std(), alpha_r.mean() + 2*alpha_r.std())
         alpha_d = torch.where(alpha_d > threshold, torch.ones_like(grad_out), torch.zeros_like(grad_out))
         alpha_r = torch.where(alpha_r > threshold, torch.ones_like(grad_out), torch.zeros_like(grad_out))
-        alpha = alpha_d * alpha_r
+        alpha = (alpha_d * alpha_r) * alpha
         alpha1 = 1 - alpha
         #cv2.imwrite('alpha.png', alpha.data[0][0].cpu().numpy()*255)
         grad_in = F.pad(grad_out, ctx.padding, mode='constant')
@@ -151,8 +151,9 @@ class ShiftConv(nn.Module):
         H, W = x.shape[2:]
         x0 = F.pad(x, [0, 1, 0, 1], mode='reflect')
         if self.mode == 'expand':
+            NUM = 4
             ret = None
-            for i in range(4):
+            for i in range(NUM):
                 x = x0[..., i//2:i//2+H, i % 2:i % 2+W]
                 x = F.conv2d(x, self.weight, self.bias,
                              self.stride, self.padding)
@@ -160,7 +161,7 @@ class ShiftConv(nn.Module):
                     ret = x
                 else:
                     ret += x
-            return ret
+            return ret / NUM
         elif self.mode == 'divide':
             grid = self.weight.shape[0] // 4
             x = torch.cat([x0[:grid, :, :H, :W],
@@ -179,6 +180,7 @@ class ShiftCountConv(nn.Module):
         self.padding = conv.padding
         self.count = 0
         self.offset = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        #self.offset = [(0, 0), (1, 1)]
 
     def forward(self, x):
         H, W = x.shape[2:]
